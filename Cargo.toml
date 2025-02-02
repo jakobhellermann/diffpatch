@@ -8,3 +8,6 @@ anyhow = "1.0"
 walkdir = "2.5"
 diffy = "0.4"
 nu-ansi-term = "0.50"
+
+[patch.crates-io]
+diffy = { path = "/home/jakob/dev/rust/contrib/diffy" }
