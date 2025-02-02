@@ -2,14 +2,14 @@ use std::io::{BufRead, Write};
 use std::path::Path;
 
 use anyhow::Result;
-use diffy::PatchFormatter;
+use diffy::{Patch, PatchFormatter};
 use nu_ansi_term::{Color, Style};
 use termion::cursor::DetectCursorPos;
 use termion::event::Key;
 use termion::input::TermRead;
 use termion::raw::{IntoRawMode, RawTerminal};
 
-use crate::changes::Changes;
+use crate::changes::{ChangeKind, Changes};
 
 pub struct Options {
     // diff options
@@ -53,38 +53,40 @@ impl DiffPatch {
     }
 
     pub fn run(&mut self, changes: &Changes) -> Result<()> {
-        for path in &changes.modified {
-            let original_contents = changes.original_contents(&path)?;
-            let modified_contents = changes.modified_contents(&path)?;
+        for change in &changes.changes {
+            let (original, modified) = change.actual(changes);
 
-            self.step(&path, &original_contents, &path, &modified_contents)?;
+            let original_content = original
+                .map(std::fs::read_to_string)
+                .transpose()?
+                .unwrap_or_default();
+            let modified_content = modified
+                .map(std::fs::read_to_string)
+                .transpose()?
+                .unwrap_or_default();
+
+            let path = change.inner();
+            let mut diff_options = diffy::DiffOptions::new();
+            diff_options.set_context_len(self.options.context_len);
+            diff_options.set_original_filename(path.display().to_string());
+            diff_options.set_modified_filename(path.display().to_string());
+            let patch = diff_options.create_patch(&original_content, &modified_content);
+
+            self.step(change, &patch)?;
         }
 
         Ok(())
     }
 
-    pub fn step(
-        &mut self,
-        original_path: &Path,
-        original_content: &str,
-        modified_path: &Path,
-        modified_content: &str,
-    ) -> Result<()> {
+    pub fn step(&mut self, change: &ChangeKind, patch: &Patch<'_, str>) -> Result<()> {
         let size = termion::terminal_size()?;
 
-        let mut diff_options = diffy::DiffOptions::new();
-        diff_options.set_context_len(self.options.context_len);
-        diff_options.set_original_filename(original_path.display().to_string());
-        diff_options.set_modified_filename(modified_path.display().to_string());
-
-        let patch = diff_options.create_patch(&original_content, &modified_content);
-
-        let n_hunks = patch.hunks().len();
-
+        let path = change.inner();
         let mut writer = CountLines::new(std::io::stdout().lock());
-        write_header(&mut writer, Some(&original_path), Some(&modified_path))?;
+        write_header(&mut writer, Some(&path), Some(&path))?;
         let header_len = writer.take_lineno();
 
+        let n_hunks = patch.hunks().len();
         for (i, hunk) in patch.hunks().iter().enumerate() {
             self.formatter.write_hunk_into(hunk, &mut writer)?;
 
