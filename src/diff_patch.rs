@@ -37,6 +37,14 @@ pub struct DiffPatch {
 
     stdin: std::io::Stdin,
     stdout: RawTerminal<std::io::Stdout>,
+
+    uncleared_lines: (u16, u16),
+}
+
+#[derive(Clone, Copy, Default)]
+struct Step {
+    change: usize,
+    hunk: usize,
 }
 
 impl DiffPatch {
@@ -49,11 +57,20 @@ impl DiffPatch {
             formatter: PatchFormatter::new().with_color(),
             stdin,
             stdout,
+            uncleared_lines: (0, 0),
         })
     }
 
     pub fn run(&mut self, changes: &Changes) -> Result<()> {
-        for change in &changes.changes {
+        if changes.changes.is_empty() {
+            return Ok(());
+        }
+
+        let mut step = Step::default();
+
+        loop {
+            let change = &changes.changes[step.change];
+
             let (original, modified) = change.actual(changes);
 
             let original_content = original
@@ -72,46 +89,64 @@ impl DiffPatch {
             diff_options.set_modified_filename(path.display().to_string());
             let patch = diff_options.create_patch(&original_content, &modified_content);
 
-            self.step(change, &patch)?;
+            self.step(change, &patch, step)?;
+
+            step.hunk += 1;
+            if step.hunk >= patch.hunks().len() {
+                step.hunk = 0;
+                step.change += 1;
+            }
+            if step.change >= changes.changes.len() {
+                break;
+            }
         }
 
         Ok(())
     }
 
-    pub fn step(&mut self, change: &ChangeKind, patch: &Patch<'_, str>) -> Result<()> {
+    fn step(&mut self, change: &ChangeKind, patch: &Patch<'_, str>, step: Step) -> Result<()> {
         let size = termion::terminal_size()?;
-
-        let path = change.inner();
-        let mut writer = CountLines::new(std::io::stdout().lock());
-        write_header(&mut writer, Some(&path), Some(&path))?;
-        let header_len = writer.take_lineno();
-
         let n_hunks = patch.hunks().len();
-        for (i, hunk) in patch.hunks().iter().enumerate() {
+        let hunk = patch.hunks().get(step.hunk);
+
+        let mut writer = CountLines::new(self.stdout.lock());
+
+        if step.hunk == 0 {
+            assert!(!self.options.clear_after_hunk || self.uncleared_lines.0 == 0);
+
+            let path = change.inner();
+            write_header(&mut writer, Some(path), Some(path))?;
+            self.uncleared_lines.0 = writer.take_lineno();
+        }
+
+        if let Some(hunk) = hunk {
+            assert!(!self.options.clear_after_hunk || self.uncleared_lines.1 == 0);
             self.formatter.write_hunk_into(hunk, &mut writer)?;
+            self.uncleared_lines.1 = writer.take_lineno();
+        }
 
-            self.ask(&format!(
-                "({}/{}) Stage this hunk [y,n,q,a,d,e]? ",
-                i + 1,
-                n_hunks
-            ))?;
+        self.ask(&format!(
+            "({}/{}) Stage this hunk [y,n,q,a,d,e]? ",
+            step.hunk + 1,
+            n_hunks
+        ))?;
 
-            if self.options.clear_after_hunk {
-                let hunk_len = writer.take_lineno();
-                let last = i == n_hunks - 1;
-                let erase = match last {
-                    true => header_len + hunk_len,
-                    false => hunk_len,
+        if self.options.clear_after_hunk {
+            let last = step.hunk == n_hunks.saturating_sub(1);
+
+            let erase = std::mem::take(&mut self.uncleared_lines.1)
+                + match last {
+                    true => std::mem::take(&mut self.uncleared_lines.0),
+                    false => 0,
                 };
 
-                self.stdout.activate_raw_mode()?;
-                let new_pos = self.stdout.cursor_pos()?;
-                self.stdout.suspend_raw_mode()?;
+            self.stdout.activate_raw_mode()?;
+            let new_pos = self.stdout.cursor_pos()?;
+            self.stdout.suspend_raw_mode()?;
 
-                let lines = erase + 1;
-                let extra = (new_pos.1 == size.1) as u16;
-                self.erase_last_lines(lines + extra)?;
-            }
+            let lines = erase + 1;
+            let extra = (new_pos.1 == size.1) as u16;
+            self.erase_last_lines(lines + extra)?;
         }
 
         Ok(())
@@ -121,7 +156,6 @@ impl DiffPatch {
         self.stdout.activate_raw_mode()?;
         let pos = self.stdout.cursor_pos()?;
         self.stdout.suspend_raw_mode()?;
-        eprintln!("{:?}", pos);
 
         let new_pos = (pos.0, pos.1.saturating_sub(n));
         write!(
