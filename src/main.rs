@@ -14,7 +14,7 @@ fn main() -> Result<()> {
     ensure!(args.count() == 0, "more args than expected");
 
     let options = Options::default();
-    let diff_patch = DiffPatch::new(options);
+    let mut diff_patch = DiffPatch::new(options)?;
 
     let changes = Changes::detect(&original_dir, &modified_dir)?;
     diff_patch.run(&changes)?;
