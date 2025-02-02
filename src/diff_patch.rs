@@ -12,6 +12,10 @@ use termion::raw::{IntoRawMode, RawTerminal};
 use crate::changes::Changes;
 
 pub struct Options {
+    // diff options
+    context_len: usize,
+
+    // interface options
     clear_after_hunk: bool,
     immediate_command: bool,
 }
@@ -19,6 +23,8 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
+            context_len: 3,
+
             clear_after_hunk: false,
             immediate_command: true,
         }
@@ -67,6 +73,7 @@ impl DiffPatch {
         let size = termion::terminal_size()?;
 
         let mut diff_options = diffy::DiffOptions::new();
+        diff_options.set_context_len(self.options.context_len);
         diff_options.set_original_filename(original_path.display().to_string());
         diff_options.set_modified_filename(modified_path.display().to_string());
 
