@@ -42,10 +42,20 @@ pub struct DiffPatch {
     uncleared_lines: (u16, u16),
 }
 
-#[derive(Clone, Copy, Default)]
+const STEP_HUNK_LAST: usize = usize::MAX;
+
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 struct Step {
     change: usize,
     hunk: usize,
+}
+impl Step {
+    fn invalid() -> Self {
+        Step {
+            change: usize::MAX,
+            hunk: usize::MAX,
+        }
+    }
 }
 
 impl DiffPatch {
@@ -68,6 +78,7 @@ impl DiffPatch {
         }
 
         let mut step = Step::default();
+        let mut prev_step = Step::invalid();
 
         loop {
             let change = &changes.changes[step.change];
@@ -89,15 +100,72 @@ impl DiffPatch {
             diff_options.set_original_filename(path.display().to_string());
             diff_options.set_modified_filename(path.display().to_string());
             let patch = diff_options.create_patch(&original_content, &modified_content);
+            let n_hunks = patch.hunks().len();
 
-            self.step(change, &patch, step)?;
+            if step.hunk == STEP_HUNK_LAST {
+                step.hunk = n_hunks.saturating_sub(1);
+            }
 
-            step.hunk += 1;
-            if step.hunk >= patch.hunks().len() {
+            self.step(change, patch, prev_step, step)?;
+
+            let action = self.ask_action(&format!(
+                "({}/{}) Stage {} [y,n,q,a,d,e]? ",
+                step.hunk + 1,
+                n_hunks.max(1),
+                match change {
+                    ChangeKind::Modified(_) => "this hunk",
+                    ChangeKind::Removed(_) => "deletion",
+                    ChangeKind::Added(_) => "addition",
+                },
+            ))?;
+
+            let mut exit = false;
+
+            prev_step = step;
+            match action {
+                Action::Stage | Action::DontStage => {
+                    step.hunk += 1;
+                }
+                Action::AllFile | Action::NoneFile => {
+                    step.change += 1;
+                    step.hunk = 0;
+                }
+                Action::Quit => {
+                    step = Step::invalid();
+                    exit = true;
+                }
+                Action::Edit => (),
+                Action::Next => {
+                    let last = step.change == changes.changes.len() - 1
+                        && step.hunk == n_hunks.saturating_sub(1);
+                    if !last {
+                        step.hunk += 1;
+                    }
+                }
+                Action::Prev => {
+                    if step.hunk > 0 {
+                        step.hunk -= 1;
+                    } else if step.change > 0 {
+                        step.change = step.change.saturating_sub(1);
+                        step.hunk = usize::MAX;
+                    }
+                }
+                Action::None => (),
+            }
+            if step.hunk != STEP_HUNK_LAST
+                && (n_hunks == 0 && step.hunk > 0 || n_hunks > 0 && step.hunk >= n_hunks)
+            {
                 step.hunk = 0;
                 step.change += 1;
             }
             if step.change >= changes.changes.len() {
+                exit = true;
+            }
+
+            let clear_header = prev_step.change != step.change;
+            self.clear(clear_header)?;
+
+            if exit {
                 break;
             }
         }
@@ -105,14 +173,19 @@ impl DiffPatch {
         Ok(())
     }
 
-    fn step(&mut self, change: &ChangeKind, patch: &Patch<'_, str>, step: Step) -> Result<()> {
+    fn step(
+        &mut self,
+        change: &ChangeKind,
+        patch: &Patch<'_, str>,
+        prev_step: Step,
+        step: Step,
+    ) -> Result<()> {
         let size = termion::terminal_size()?;
-        let n_hunks = patch.hunks().len();
         let hunk = patch.hunks().get(step.hunk);
 
         let mut writer = CountLines::new(self.stdout.lock(), size.0);
 
-        if step.hunk == 0 {
+        if prev_step.change != step.change {
             assert!(!self.options.clear_after_hunk || self.uncleared_lines.0 == 0);
 
             let path = change.inner();
@@ -126,18 +199,14 @@ impl DiffPatch {
             self.uncleared_lines.1 = writer.take_lineno();
         }
 
-        self.ask(&format!(
-            "({}/{}) Stage this hunk [y,n,q,a,d,e]? ",
-            step.hunk + 1,
-            n_hunks
-        ))?;
+        Ok(())
+    }
 
+    fn clear(&mut self, clear_header: bool) -> Result<()> {
         if self.options.clear_after_hunk {
-            let last = step.hunk == n_hunks.saturating_sub(1);
-
             let erase = std::mem::take(&mut self.uncleared_lines.1)
                 + 1 // ask
-                + match last {
+                + match clear_header {
                     true => std::mem::take(&mut self.uncleared_lines.0),
                     false => 0,
                 };
@@ -172,36 +241,59 @@ impl DiffPatch {
     }
 }
 
+enum Action {
+    Stage,
+    DontStage,
+    Quit,
+    AllFile,
+    NoneFile,
+    Edit,
+
+    Prev,
+    Next,
+
+    None,
+}
+
 impl DiffPatch {
-    fn ask(&mut self, msg: &str) -> Result<(), std::io::Error> {
+    fn ask_action(&mut self, msg: &str) -> Result<Action, std::io::Error> {
         let style = nu_ansi_term::Style::new().fg(Color::Blue).bold();
 
         let mut stdout = std::io::stdout().lock();
         write!(self.stdout, "{}", style.paint(msg))?;
         stdout.flush()?;
 
-        if self.options.immediate_command {
+        let result = if self.options.immediate_command {
             self.stdout.activate_raw_mode()?;
 
+            let mut result = Action::None;
             for key in self.stdin.lock().keys() {
-                let key = key?;
-
-                match key {
+                result = match key? {
                     Key::Ctrl('c') => std::process::exit(1),
-                    Key::Char('y' | 'n' | 'q' | 'a' | 'd' | 'e') => break,
-                    Key::Char(_) => {}
-                    _ => {}
-                }
+                    Key::Char('y') => Action::Stage,
+                    Key::Char('n') => Action::DontStage,
+                    Key::Char('q') => Action::Quit,
+                    Key::Char('a') => Action::AllFile,
+                    Key::Char('d') => Action::NoneFile,
+                    Key::Char('e') => Action::Edit,
+                    Key::Left | Key::Up => Action::Prev,
+                    Key::Right | Key::Down => Action::Next,
+                    _ => continue,
+                };
+                break;
             }
 
             self.stdout.suspend_raw_mode()?;
             writeln!(self.stdout)?;
+
+            result
         } else {
             let mut line = String::new();
             BufRead::read_line(&mut self.stdin.lock(), &mut line)?;
-        }
+            todo!()
+        };
 
-        Ok(())
+        Ok(result)
     }
 }
 
