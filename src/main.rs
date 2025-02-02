@@ -3,6 +3,7 @@ use changes::Changes;
 use std::path::PathBuf;
 
 mod changes;
+mod count_lines;
 mod diff_patch;
 
 use diff_patch::{DiffPatch, Options};

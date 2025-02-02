@@ -10,6 +10,7 @@ use termion::input::TermRead;
 use termion::raw::{IntoRawMode, RawTerminal};
 
 use crate::changes::{ChangeKind, Changes};
+use crate::count_lines::CountLines;
 
 pub struct Options {
     // diff options
@@ -109,7 +110,7 @@ impl DiffPatch {
         let n_hunks = patch.hunks().len();
         let hunk = patch.hunks().get(step.hunk);
 
-        let mut writer = CountLines::new(self.stdout.lock());
+        let mut writer = CountLines::new(self.stdout.lock(), size.0);
 
         if step.hunk == 0 {
             assert!(!self.options.clear_after_hunk || self.uncleared_lines.0 == 0);
@@ -135,27 +136,20 @@ impl DiffPatch {
             let last = step.hunk == n_hunks.saturating_sub(1);
 
             let erase = std::mem::take(&mut self.uncleared_lines.1)
+                + 1 // ask
                 + match last {
                     true => std::mem::take(&mut self.uncleared_lines.0),
                     false => 0,
                 };
 
-            self.stdout.activate_raw_mode()?;
-            let new_pos = self.stdout.cursor_pos()?;
-            self.stdout.suspend_raw_mode()?;
-
-            let lines = erase + 1;
-            let extra = (new_pos.1 == size.1) as u16;
-            self.erase_last_lines(lines + extra)?;
+            self.erase_last_lines(erase)?;
         }
 
         Ok(())
     }
 
     fn erase_last_lines(&mut self, n: u16) -> Result<(u16, u16)> {
-        self.stdout.activate_raw_mode()?;
-        let pos = self.stdout.cursor_pos()?;
-        self.stdout.suspend_raw_mode()?;
+        let pos = self.cursor_pos()?;
 
         let new_pos = (pos.0, pos.1.saturating_sub(n));
         write!(
@@ -168,25 +162,13 @@ impl DiffPatch {
 
         Ok(pos)
     }
-}
 
-struct CountLines<W>(W, usize);
-impl<W> CountLines<W> {
-    fn new(w: W) -> Self {
-        CountLines(w, 0)
-    }
-    fn take_lineno(&mut self) -> u16 {
-        std::mem::take(&mut self.1) as u16
-    }
-}
-impl<W: std::io::Write> std::io::Write for CountLines<W> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.1 += buf.iter().filter(|&&x| x == b'\n').count();
-        self.0.write(buf)
-    }
+    fn cursor_pos(&mut self) -> Result<(u16, u16)> {
+        self.stdout.activate_raw_mode()?;
+        let new_pos = self.stdout.cursor_pos()?;
+        self.stdout.suspend_raw_mode()?;
 
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.0.flush()
+        Ok(new_pos)
     }
 }
 
