@@ -571,7 +571,8 @@ fn apply_change(
     patch: &Patch<str>,
     file_resolution: &[bool],
 ) -> Result<()> {
-    let applied = diffy::apply(original, patch)?;
+    let applied = diffy::apply(original, patch)
+        .with_context(|| format!("Could not apply patch\n{}", patch.to_string()))?;
 
     let original_path = changes.original_path(change.inner());
     let modified_path = changes.modified_path(change.inner());
