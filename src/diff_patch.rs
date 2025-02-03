@@ -157,7 +157,7 @@ impl DiffPatch {
                 _ => {}
             }
 
-            let mut exit = false;
+            let mut finish = false;
 
             prev_step = step;
             match action {
@@ -169,7 +169,7 @@ impl DiffPatch {
                 }
                 Action::Quit => {
                     step = Step::invalid();
-                    exit = true;
+                    finish = true;
                 }
                 Action::Edit => (),
                 Action::Next => {
@@ -187,7 +187,7 @@ impl DiffPatch {
                         step.hunk = usize::MAX;
                     }
                 }
-                Action::Clear | Action::None => (),
+                Action::Clear | Action::Exit | Action::None => (),
             }
             if step.hunk != STEP_HUNK_LAST
                 && (n_hunks == 0 && step.hunk > 0 || n_hunks > 0 && step.hunk >= n_hunks)
@@ -196,7 +196,7 @@ impl DiffPatch {
                 step.change += 1;
             }
             if step.change >= changes.changes.len() {
-                exit = true;
+                finish = true;
             }
 
             if let Action::Clear = action {
@@ -206,7 +206,11 @@ impl DiffPatch {
                 self.clear(clear_header)?;
             }
 
-            if exit {
+            if let Action::Exit = action {
+                std::process::exit(1);
+            }
+
+            if finish {
                 break;
             }
         }
@@ -313,6 +317,7 @@ enum Action {
     Next,
 
     Clear,
+    Exit,
     None,
 }
 
@@ -330,7 +335,7 @@ impl DiffPatch {
             let mut result = Action::None;
             for key in self.stdin.lock().keys() {
                 result = match key? {
-                    Key::Ctrl('c') => std::process::exit(1),
+                    Key::Ctrl('c') => Action::Exit,
                     Key::Char('y') => Action::HunkYes,
                     Key::Char('n') => Action::HunkNo,
                     Key::Char('a') => Action::FileYes,
