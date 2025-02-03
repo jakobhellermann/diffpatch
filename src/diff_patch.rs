@@ -143,7 +143,7 @@ impl DiffPatch {
         loop {
             let change = &changes.changes[step.change];
 
-            let patch = &patches[step.change];
+            let patch = &mut patches[step.change];
             let n_hunks = patch.hunks().len();
             let n_hunks_logical = n_hunks.max(1);
 
@@ -227,7 +227,18 @@ impl DiffPatch {
 
             match action {
                 Action::Split => {
-                    self.write_error("Sorry, cannot split this hunk")?;
+                    let split_range = patch.split_hunk_at(step.hunk);
+                    if split_range.len() == 1 {
+                        self.write_error("Sorry, cannot split this hunk")?;
+                    } else {
+                        let file_resolutions = resolutions.get_mut(step.change);
+
+                        let resolution = *file_resolutions.get_mut(split_range.start);
+                        file_resolutions.inner_mut().splice(
+                            split_range.start..split_range.start + 1,
+                            std::iter::repeat_n(resolution, split_range.len()),
+                        );
+                    }
                 }
                 Action::Edit => {
                     self.write_error("Editing is not yet implemented")?;
@@ -501,7 +512,7 @@ fn apply_change(
         }
         ChangeKind::Removed(_) => {
             assert_eq!(file_resolution.len(), 1);
-            let resolution = *file_resolution.get(0);
+            let resolution = *file_resolution.get_existing(0);
 
             if resolution == false {
                 std::fs::copy(&original_path, &modified_path)
@@ -511,7 +522,7 @@ fn apply_change(
         ChangeKind::Added(_) => {
             assert_eq!(file_resolution.len(), 1);
 
-            let resolution = *file_resolution.get(0);
+            let resolution = *file_resolution.get_existing(0);
             if resolution == false {
                 std::fs::remove_file(modified_path).context("error applying file addition")?;
             }

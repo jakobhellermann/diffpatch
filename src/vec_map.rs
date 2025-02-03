@@ -29,10 +29,14 @@ impl<T> VecMap<T> {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    pub fn inner_mut(&mut self) -> &mut Vec<T> {
+        &mut self.0
+    }
 }
 
 impl<T: Default> VecMap<T> {
-    pub fn get(&self, i: usize) -> &T {
+    pub fn get_existing(&self, i: usize) -> &T {
         &self.0[i]
     }
 
