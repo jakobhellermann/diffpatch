@@ -12,3 +12,6 @@ termion = "4.0"
 
 [patch.crates-io]
 diffy = { path = "/home/jakob/dev/rust/contrib/diffy" }
+
+[lints.clippy]
+bool_comparison = "allow"
