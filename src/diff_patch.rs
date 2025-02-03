@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::io::{BufRead, Write};
 use std::iter;
 use std::ops::ControlFlow;
@@ -178,9 +179,11 @@ impl DiffPatch {
                 }
                 Action::Edit => match patch.hunks_mut().get_mut(step.hunk) {
                     Some(hunk) => {
-                        let hunk_str = self.plain_formatter.fmt_hunk(hunk).to_string();
+                        let display_hunk = reverse_if(hunk, self.options.reversed);
+                        let hunk_str = self.plain_formatter.fmt_hunk(&display_hunk).to_string();
                         let new_hunk = self.edit(&hunk_str)?;
-                        *hunk = Hunk::from_str(new_hunk.leak(), true)?;
+                        let new_hunk = Hunk::from_str(new_hunk.leak(), true)?;
+                        *hunk = reverse_if(&new_hunk, self.options.reversed).into_owned();
                         resolutions[step.change][step.hunk] = true;
                         step.hunk += 1;
                     }
@@ -281,7 +284,8 @@ impl DiffPatch {
 
         if let Some(hunk) = hunk {
             assert!(!self.options.clear_after_hunk || self.uncleared_lines.1 == 0);
-            self.formatter.write_hunk_into(hunk, &mut writer)?;
+            self.formatter
+                .write_hunk_into(&reverse_if(hunk, self.options.reversed), &mut writer)?;
             self.uncleared_lines.1 = writer.take_lineno();
         }
 
@@ -560,6 +564,13 @@ fn apply_change(
     }
 
     Ok(())
+}
+
+fn reverse_if<'h, 'c>(hunk: &'c Hunk<'h, str>, reverse: bool) -> Cow<'c, Hunk<'h, str>> {
+    match reverse {
+        true => Cow::Owned(hunk.reverse()),
+        false => Cow::Borrowed(hunk),
+    }
 }
 
 enum MaybeRawTerminal<W: Write + AsFd> {

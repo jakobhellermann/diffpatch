@@ -5,6 +5,7 @@ use std::str::FromStr;
 pub struct Options {
     // diff options
     pub context_len: usize,
+    pub reversed: bool,
 
     // interface options
     pub clear_after_hunk: bool,
@@ -15,6 +16,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             context_len: 3,
+            reversed: false,
 
             clear_after_hunk: false,
             immediate_command: true,
