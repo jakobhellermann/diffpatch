@@ -186,7 +186,7 @@ impl DiffPatch {
                         step.hunk = usize::MAX;
                     }
                 }
-                Action::None => (),
+                Action::Clear | Action::None => (),
             }
             if step.hunk != STEP_HUNK_LAST
                 && (n_hunks == 0 && step.hunk > 0 || n_hunks > 0 && step.hunk >= n_hunks)
@@ -198,8 +198,12 @@ impl DiffPatch {
                 exit = true;
             }
 
-            let clear_header = prev_step.change != step.change;
-            self.clear(clear_header)?;
+            if let Action::Clear = action {
+                self.clear_all()?;
+            } else {
+                let clear_header = prev_step.change != step.change;
+                self.clear(clear_header)?;
+            }
 
             if exit {
                 break;
@@ -252,6 +256,12 @@ impl DiffPatch {
         Ok(())
     }
 
+    fn clear_all(&mut self) -> Result<()> {
+        write!(self.stdout, "{}", termion::clear::All)?;
+        write!(self.stdout, "{}", termion::cursor::Goto(1, 1))?;
+        Ok(())
+    }
+
     fn clear(&mut self, clear_header: bool) -> Result<()> {
         if self.options.clear_after_hunk {
             let erase = std::mem::take(&mut self.uncleared_lines.1)
@@ -300,6 +310,8 @@ enum Action {
     Quit,
     Prev,
     Next,
+
+    Clear,
     None,
 }
 
@@ -324,6 +336,7 @@ impl DiffPatch {
                     Key::Char('d') => Action::FileNo,
                     Key::Char('e') => Action::Edit,
                     Key::Char('q') => Action::Quit,
+                    Key::Ctrl('l') => Action::Clear,
                     Key::Left | Key::Up => Action::Prev,
                     Key::Right | Key::Down => Action::Next,
                     _ => continue,
