@@ -2,13 +2,32 @@ use color_eyre::Result;
 use color_eyre::eyre::{Context, bail, eyre};
 use std::str::FromStr;
 
+pub enum Interface {
+    Direct,
+    InlineClear,
+}
+impl FromStr for Interface {
+    type Err = ParseEnumError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "direct" => Ok(Interface::Direct),
+            "inline-clear" => Ok(Interface::InlineClear),
+            other => Err(ParseEnumError(
+                &["direct", "inline-clear"],
+                other.to_owned(),
+            )),
+        }
+    }
+}
+
 pub struct Options {
     // diff options
     pub context_len: usize,
     pub reversed: bool,
 
     // interface options
-    pub clear_after_hunk: bool,
+    pub interface: Interface,
     pub immediate_command: bool,
 
     // misc
@@ -21,7 +40,7 @@ impl Default for Options {
             context_len: 3,
             reversed: false,
 
-            clear_after_hunk: false,
+            interface: Interface::Direct,
             immediate_command: true,
 
             jj_subcommand: None,
@@ -32,7 +51,8 @@ impl Default for Options {
 impl Options {
     pub fn load_env(&mut self) -> Result<&mut Options> {
         get_env(&mut self.context_len, "DIFFPATCH_CONTEXT_LEN")?;
-        get_env_bool(&mut self.clear_after_hunk, "DIFFPATCH_CLEAR_AFTER_HUNK")?;
+
+        get_env(&mut self.interface, "DIFFPATCH_INTERFACE")?;
         get_env_bool(&mut self.immediate_command, "DIFFPATCH_IMMEDIATE_COMMAND")?;
 
         Ok(self)
@@ -60,3 +80,16 @@ fn get_env_bool(out: &mut bool, env_name: &str) -> Result<()> {
     }
     Ok(())
 }
+
+#[derive(Debug)]
+pub struct ParseEnumError(&'static [&'static str], String);
+impl std::fmt::Display for ParseEnumError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Expected one of ")?;
+        for possible in self.0 {
+            write!(f, "{possible}, ")?;
+        }
+        write!(f, "got '{}'", self.1)
+    }
+}
+impl std::error::Error for ParseEnumError {}

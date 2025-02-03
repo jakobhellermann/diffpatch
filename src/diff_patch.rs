@@ -16,7 +16,7 @@ use termion::input::TermRead;
 use termion::raw::{IntoRawMode, RawTerminal};
 
 use crate::changes::{ChangeKind, Changes};
-use crate::config::Options;
+use crate::config::{Interface, Options};
 use crate::count_lines::CountLines;
 
 pub struct DiffPatch {
@@ -27,7 +27,7 @@ pub struct DiffPatch {
     stdin: std::io::Stdin,
     stdout: MaybeRawTerminal<std::io::Stdout>,
 
-    uncleared_lines: (u16, u16),
+    inline_uncleared_lines: (u16, u16),
 }
 
 const STEP_HUNK_LAST: usize = usize::MAX;
@@ -54,10 +54,11 @@ impl DiffPatch {
 
         if !is_tty {
             options.immediate_command = false;
-            options.clear_after_hunk = false;
+            options.interface = Interface::Direct;
         }
 
-        let wants_raw_terminal = options.immediate_command || options.clear_after_hunk;
+        let wants_raw_terminal =
+            options.immediate_command || matches!(options.interface, Interface::InlineClear);
         let stdout = if wants_raw_terminal {
             let term = stdout
                 .into_raw_mode()
@@ -74,7 +75,7 @@ impl DiffPatch {
             plain_formatter: PatchFormatter::new(),
             stdin,
             stdout,
-            uncleared_lines: (0, 0),
+            inline_uncleared_lines: (0, 0),
         })
     }
 
@@ -282,18 +283,15 @@ impl DiffPatch {
         let mut writer = CountLines::new(self.stdout.lock(), size.0);
 
         if prev_step.change != step.change {
-            assert!(!self.options.clear_after_hunk || self.uncleared_lines.0 == 0);
-
             let path = change.inner();
             write_header(&mut writer, Some(path), Some(path))?;
-            self.uncleared_lines.0 = writer.take_lineno();
+            self.inline_uncleared_lines.0 = writer.take_lineno();
         }
 
         if let Some(hunk) = hunk {
-            assert!(!self.options.clear_after_hunk || self.uncleared_lines.1 == 0);
             self.formatter
                 .write_hunk_into(&reverse_if(hunk, self.options.reversed), &mut writer)?;
-            self.uncleared_lines.1 = writer.take_lineno();
+            self.inline_uncleared_lines.1 = writer.take_lineno();
         }
 
         Ok(())
@@ -313,15 +311,18 @@ impl DiffPatch {
     }
 
     fn clear(&mut self, clear_header: bool) -> Result<()> {
-        if self.options.clear_after_hunk {
-            let erase = std::mem::take(&mut self.uncleared_lines.1)
-                + 1 // ask
-                + match clear_header {
-                    true => std::mem::take(&mut self.uncleared_lines.0),
+        match self.options.interface {
+            Interface::Direct => {}
+            Interface::InlineClear => {
+                let clear_header = match clear_header {
+                    true => std::mem::take(&mut self.inline_uncleared_lines.0),
                     false => 0,
                 };
+                let clear_hunk = std::mem::take(&mut self.inline_uncleared_lines.1);
+                let erase = clear_header + clear_hunk + 1;
 
-            self.erase_last_lines(erase)?;
+                self.erase_last_lines(erase)?;
+            }
         }
 
         Ok(())
