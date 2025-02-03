@@ -1,10 +1,12 @@
 use std::io::{BufRead, Write};
+use std::iter;
 use std::ops::ControlFlow;
 use std::os::fd::AsFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use color_eyre::Result;
-use color_eyre::eyre::{Context, eyre};
+use color_eyre::eyre::{Context, ensure, eyre};
 use diffy::{Hunk, Patch, PatchFormatter};
 use nu_ansi_term::{Color, Style};
 use termion::cursor::DetectCursorPos;
@@ -39,6 +41,7 @@ impl Default for Options {
 pub struct DiffPatch {
     options: Options,
     formatter: PatchFormatter,
+    plain_formatter: PatchFormatter,
 
     stdin: std::io::Stdin,
     stdout: MaybeRawTerminal<std::io::Stdout>,
@@ -87,6 +90,7 @@ impl DiffPatch {
         Ok(DiffPatch {
             options,
             formatter: PatchFormatter::new().with_color(),
+            plain_formatter: PatchFormatter::new(),
             stdin,
             stdout,
             uncleared_lines: (0, 0),
@@ -190,7 +194,16 @@ impl DiffPatch {
                     step = Step::invalid();
                     finish = true;
                 }
-                Action::Edit => (),
+                Action::Edit => match patch.hunks_mut().get_mut(step.hunk) {
+                    Some(hunk) => {
+                        let hunk_str = self.plain_formatter.fmt_hunk(hunk).to_string();
+                        let new_hunk = self.edit(&hunk_str)?;
+                        *hunk = Hunk::from_str(new_hunk.leak(), true)?;
+                        resolutions[step.change][step.hunk] = true;
+                        step.hunk += 1;
+                    }
+                    None => self.write_error("Sorry, cannot edit this hunk")?,
+                },
                 Action::Next => {
                     let last = step.change == changes.changes.len() - 1
                         && step.hunk == n_hunks.saturating_sub(1);
@@ -236,12 +249,9 @@ impl DiffPatch {
                         let resolution = *file_resolutions.get_mut(split_range.start);
                         file_resolutions.inner_mut().splice(
                             split_range.start..split_range.start + 1,
-                            std::iter::repeat_n(resolution, split_range.len()),
+                            iter::repeat_n(resolution, split_range.len()),
                         );
                     }
-                }
-                Action::Edit => {
-                    self.write_error("Editing is not yet implemented")?;
                 }
                 Action::Exit => {
                     std::process::exit(1);
@@ -422,7 +432,50 @@ impl DiffPatch {
         self.stdout.suspend_raw_mode()?;
         Ok(None)
     }
+
+    fn edit(&self, hunk: &str) -> Result<String> {
+        let msg = format!("{EDIT_HUNK_HEADER}\n{hunk}{EDIT_HUNK_TRAILER}");
+        let path = hunk_edit_path(&std::env::current_dir()?);
+        std::fs::write(&path, msg)?;
+
+        let mut cmd = Command::new("nvim").arg(&path).spawn()?;
+        let status = cmd.wait()?;
+        ensure!(status.success(), "Error running external editor");
+
+        let edited = std::fs::read_to_string(path)?;
+        let without_comments = edited
+            .split_inclusive('\n')
+            .filter(|line| !line.starts_with('#'))
+            .collect::<String>();
+        Ok(without_comments)
+    }
 }
+
+fn hunk_edit_path(cwd: &Path) -> PathBuf {
+    let vcs_dir = iter::successors(Some(cwd), |path| path.parent()).find_map(|dir| {
+        let jj_dir = dir.join(".jj");
+        if jj_dir.is_dir() {
+            Some(jj_dir)
+        } else {
+            let git_dir = dir.join(".git");
+            git_dir.is_dir().then_some(git_dir)
+        }
+    });
+    let dir = vcs_dir.unwrap_or_else(std::env::temp_dir);
+
+    dir.join("addp-hunk-edit.diff")
+}
+
+const EDIT_HUNK_HEADER: &str = "# Manual hunk edit mode -- see bottom for a quick guide.";
+const EDIT_HUNK_TRAILER: &str = "# ---
+# To remove '-' lines, make them ' ' lines (context).
+# To remove '+' lines, delete them.
+# Lines starting with # will be removed.
+# If the patch applies cleanly, the edited hunk will immediately be marked for staging.
+# If it does not apply cleanly, you will be given an opportunity to
+# edit again.  If all lines of the hunk are removed, then the edit is
+# aborted and the hunk is left unchanged.
+";
 
 enum Action {
     HunkYes,
