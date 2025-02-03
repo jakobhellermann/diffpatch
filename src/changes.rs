@@ -1,5 +1,5 @@
 use color_eyre::Result;
-use color_eyre::eyre::ensure;
+use color_eyre::eyre::{ensure, eyre};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -74,7 +74,30 @@ fn read_diff_paths(dir: &Path) -> Result<BTreeSet<PathBuf>> {
     Ok(paths)
 }
 
-fn read_changes(original_dir: &Path, modified_dir: &Path) -> Result<Changes> {
+fn read_changes(original: &Path, modified: &Path) -> Result<Changes> {
+    ensure!(
+        original.exists(),
+        "{}: no such file or directory",
+        original.display()
+    );
+    ensure!(
+        modified.exists(),
+        "{}: no such file or directory",
+        modified.display()
+    );
+
+    match (original.is_dir(), modified.is_dir()) {
+        (true, true) => read_changes_dir(original, modified),
+        (false, false) => Err(eyre!("Diffing files is not implemented yet")),
+        _ => Err(eyre!(
+            "Cannot diffpatch mix of path and directory {} and {}",
+            original.display(),
+            modified.display()
+        )),
+    }
+}
+
+fn read_changes_dir(original_dir: &Path, modified_dir: &Path) -> Result<Changes> {
     let original_paths = read_diff_paths(original_dir)?;
     let modified_paths = read_diff_paths(modified_dir)?;
 
