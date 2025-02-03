@@ -2,6 +2,7 @@ use changes::Changes;
 use color_eyre::eyre::{ContextCompat, Result, ensure};
 use config::Options;
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 mod changes;
 mod config;
@@ -10,7 +11,7 @@ mod diff_patch;
 
 use diff_patch::DiffPatch;
 
-fn main() -> Result<()> {
+fn main() -> Result<ExitCode> {
     color_eyre::install()?;
 
     let mut args = std::env::args().skip(1);
@@ -25,9 +26,7 @@ fn main() -> Result<()> {
     let mut diff_patch = DiffPatch::new(options)?;
 
     let changes = Changes::detect(&original_dir, &modified_dir)?;
-    diff_patch.run(&changes)?;
-
-    Ok(())
+    diff_patch.run(&changes)
 }
 
 // TODO: get this from JJ itself

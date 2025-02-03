@@ -4,7 +4,7 @@ use std::iter;
 use std::ops::ControlFlow;
 use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitCode};
 
 use color_eyre::Result;
 use color_eyre::eyre::{Context, ensure, eyre};
@@ -79,9 +79,9 @@ impl DiffPatch {
         })
     }
 
-    pub fn run(&mut self, changes: &Changes) -> Result<()> {
+    pub fn run(&mut self, changes: &Changes) -> Result<ExitCode> {
         if changes.changes.is_empty() {
-            return Ok(());
+            return Ok(ExitCode::SUCCESS);
         }
 
         let mut resolutions = vec![Vec::<bool>::new(); changes.changes.len()];
@@ -226,7 +226,7 @@ impl DiffPatch {
                         );
                     }
                 }
-                Action::Exit => std::process::exit(1),
+                Action::Exit => return Ok(ExitCode::FAILURE),
                 Action::Clear | Action::None => (),
             }
             if step.hunk != STEP_HUNK_LAST
@@ -266,7 +266,7 @@ impl DiffPatch {
             apply_change(changes, change, original, patch, file_resolution)?;
         }
 
-        Ok(())
+        Ok(ExitCode::SUCCESS)
     }
 
     fn step(
