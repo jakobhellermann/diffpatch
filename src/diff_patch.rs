@@ -219,7 +219,22 @@ impl DiffPatch {
                         step.hunk = usize::MAX;
                     }
                 }
-                Action::Clear | Action::Exit | Action::Split | Action::None => (),
+                Action::Split => {
+                    let split_range = patch.split_hunk_at(step.hunk);
+                    if split_range.len() == 1 {
+                        self.write_error("Sorry, cannot split this hunk")?;
+                    } else {
+                        let file_resolutions = resolutions.get_mut(step.change);
+
+                        let resolution = *file_resolutions.get_mut(split_range.start);
+                        file_resolutions.inner_mut().splice(
+                            split_range.start..split_range.start + 1,
+                            iter::repeat_n(resolution, split_range.len()),
+                        );
+                    }
+                }
+                Action::Exit => std::process::exit(1),
+                Action::Clear | Action::None => (),
             }
             if step.hunk != STEP_HUNK_LAST
                 && (n_hunks == 0 && step.hunk > 0 || n_hunks > 0 && step.hunk >= n_hunks)
@@ -236,27 +251,6 @@ impl DiffPatch {
             } else {
                 let clear_header = prev_step.change != step.change;
                 self.clear(clear_header)?;
-            }
-
-            match action {
-                Action::Split => {
-                    let split_range = patch.split_hunk_at(step.hunk);
-                    if split_range.len() == 1 {
-                        self.write_error("Sorry, cannot split this hunk")?;
-                    } else {
-                        let file_resolutions = resolutions.get_mut(step.change);
-
-                        let resolution = *file_resolutions.get_mut(split_range.start);
-                        file_resolutions.inner_mut().splice(
-                            split_range.start..split_range.start + 1,
-                            iter::repeat_n(resolution, split_range.len()),
-                        );
-                    }
-                }
-                Action::Exit => {
-                    std::process::exit(1);
-                }
-                _ => {}
             }
 
             if finish {
