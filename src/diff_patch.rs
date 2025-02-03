@@ -14,6 +14,7 @@ use termion::cursor::DetectCursorPos;
 use termion::event::Key;
 use termion::input::TermRead;
 use termion::raw::{IntoRawMode, RawTerminal};
+use termion::screen::{AlternateScreen, IntoAlternateScreen};
 
 use crate::changes::{ChangeKind, Changes};
 use crate::config::{Interface, Options};
@@ -26,6 +27,8 @@ pub struct DiffPatch {
 
     stdin: std::io::Stdin,
     stdout: MaybeRawTerminal<std::io::Stdout>,
+
+    _alternate: Option<AlternateScreen<std::io::Stdout>>,
 
     inline_uncleared_lines: (u16, u16),
 }
@@ -57,8 +60,11 @@ impl DiffPatch {
             options.interface = Interface::Direct;
         }
 
-        let wants_raw_terminal =
-            options.immediate_command || matches!(options.interface, Interface::InlineClear);
+        let wants_raw_terminal = options.immediate_command
+            || matches!(
+                options.interface,
+                Interface::InlineClear | Interface::Fullscreen
+            );
         let stdout = if wants_raw_terminal {
             let term = stdout
                 .into_raw_mode()
@@ -69,12 +75,22 @@ impl DiffPatch {
             MaybeRawTerminal::Normal(stdout)
         };
 
+        let alternate = matches!(options.interface, Interface::Fullscreen)
+            .then(|| -> std::io::Result<_> {
+                let mut alt = std::io::stdout().into_alternate_screen()?;
+                write!(alt, "{}", termion::cursor::Goto(1, 1))?;
+                Ok(alt)
+            })
+            .transpose()
+            .context("Could not open fullscreen terminal")?;
+
         Ok(DiffPatch {
             options,
             formatter: PatchFormatter::new().with_color(),
             plain_formatter: PatchFormatter::new(),
             stdin,
             stdout,
+            _alternate: alternate,
             inline_uncleared_lines: (0, 0),
         })
     }
@@ -304,27 +320,38 @@ impl DiffPatch {
             .unwrap_or(Ok((u16::MAX, u16::MAX)))
     }
 
-    fn clear_all(&mut self) -> Result<()> {
-        write!(self.stdout, "{}", termion::clear::All)?;
-        write!(self.stdout, "{}", termion::cursor::Goto(1, 1))?;
-        Ok(())
-    }
-
     fn clear(&mut self, clear_header: bool) -> Result<()> {
         match self.options.interface {
             Interface::Direct => {}
+            Interface::Fullscreen => {
+                if clear_header {
+                    self.clear_all()?;
+                    self.inline_uncleared_lines.0 = 0;
+                } else {
+                    let header_lines = self.inline_uncleared_lines.0;
+                    write!(
+                        self.stdout,
+                        "{}{}",
+                        termion::cursor::Goto(1, header_lines + 1),
+                        termion::clear::AfterCursor,
+                    )?;
+                }
+            }
             Interface::InlineClear => {
-                let clear_header = match clear_header {
-                    true => std::mem::take(&mut self.inline_uncleared_lines.0),
-                    false => 0,
-                };
+                let clear_header = clear_header
+                    .then(|| std::mem::take(&mut self.inline_uncleared_lines.0))
+                    .unwrap_or(0);
                 let clear_hunk = std::mem::take(&mut self.inline_uncleared_lines.1);
-                let erase = clear_header + clear_hunk + 1;
-
-                self.erase_last_lines(erase)?;
+                self.erase_last_lines(clear_header + clear_hunk + 1)?;
             }
         }
 
+        Ok(())
+    }
+
+    fn clear_all(&mut self) -> Result<()> {
+        write!(self.stdout, "{}", termion::clear::All)?;
+        write!(self.stdout, "{}", termion::cursor::Goto(1, 1))?;
         Ok(())
     }
 

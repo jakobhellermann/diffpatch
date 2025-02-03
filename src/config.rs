@@ -4,6 +4,7 @@ use std::str::FromStr;
 
 pub enum Interface {
     Direct,
+    Fullscreen,
     InlineClear,
 }
 impl FromStr for Interface {
@@ -12,6 +13,7 @@ impl FromStr for Interface {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
             "direct" => Ok(Interface::Direct),
+            "fullscreen" => Ok(Interface::Fullscreen),
             "inline-clear" => Ok(Interface::InlineClear),
             other => Err(ParseEnumError(
                 &["direct", "inline-clear"],
