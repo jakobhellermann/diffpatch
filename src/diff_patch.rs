@@ -206,7 +206,7 @@ impl DiffPatch {
                         step.hunk = usize::MAX;
                     }
                 }
-                Action::Clear | Action::Exit | Action::None => (),
+                Action::Clear | Action::Exit | Action::Split | Action::None => (),
             }
             if step.hunk != STEP_HUNK_LAST
                 && (n_hunks == 0 && step.hunk > 0 || n_hunks > 0 && step.hunk >= n_hunks)
@@ -225,8 +225,17 @@ impl DiffPatch {
                 self.clear(clear_header)?;
             }
 
-            if let Action::Exit = action {
-                std::process::exit(1);
+            match action {
+                Action::Split => {
+                    self.write_error("Sorry, cannot split this hunk")?;
+                }
+                Action::Edit => {
+                    self.write_error("Editing is not yet implemented")?;
+                }
+                Action::Exit => {
+                    std::process::exit(1);
+                }
+                _ => {}
             }
 
             if finish {
@@ -324,6 +333,11 @@ impl DiffPatch {
         Ok(pos)
     }
 
+    fn write_error(&mut self, msg: &str) -> Result<(), std::io::Error> {
+        let error_style = nu_ansi_term::Style::new().fg(Color::Red).bold();
+        writeln!(self.stdout, "{}", error_style.paint(msg))
+    }
+
     fn ask_action(&mut self, msg: &str) -> Result<Action> {
         let style = nu_ansi_term::Style::new().fg(Color::Blue).bold();
 
@@ -404,6 +418,7 @@ enum Action {
     HunkNo,
     FileYes,
     FileNo,
+    Split,
     Edit,
     Quit,
     Prev,
@@ -421,6 +436,7 @@ impl Action {
             'n' => Action::HunkNo,
             'a' => Action::FileYes,
             'd' => Action::FileNo,
+            's' => Action::Split,
             'e' => Action::Edit,
             'q' => Action::Quit,
             'l' => Action::Clear,
