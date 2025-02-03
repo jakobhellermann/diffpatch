@@ -87,11 +87,17 @@ impl DiffPatch {
 
                 let original_content = original
                     .map(std::fs::read_to_string)
-                    .transpose()?
+                    .transpose()
+                    .with_context(|| {
+                        format!("failed to read original '{}'", change.inner().display())
+                    })?
                     .unwrap_or_default();
                 let modified_content = modified
                     .map(std::fs::read_to_string)
-                    .transpose()?
+                    .transpose()
+                    .with_context(|| {
+                        format!("failed to read modified '{}'", change.inner().display())
+                    })?
                     .unwrap_or_default();
 
                 Ok((original_content, modified_content))
