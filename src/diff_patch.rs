@@ -1,8 +1,8 @@
 use std::io::{BufRead, Write};
 use std::path::Path;
 
-use anyhow::Result;
-use diffy::{Patch, PatchFormatter};
+use anyhow::{Context, Result};
+use diffy::{Hunk, Patch, PatchFormatter};
 use nu_ansi_term::{Color, Style};
 use termion::cursor::DetectCursorPos;
 use termion::event::Key;
@@ -98,7 +98,7 @@ impl DiffPatch {
             })
             .collect::<Result<_>>()?;
 
-        let patches: Vec<Patch<str>> = changes
+        let mut patches: Vec<Patch<str>> = changes
             .iter()
             .zip(&contents)
             .map(|(change, (original, modified))| {
@@ -119,6 +119,7 @@ impl DiffPatch {
 
             let patch = &patches[step.change];
             let n_hunks = patch.hunks().len();
+            let n_hunks_logical = n_hunks.max(1);
 
             if step.hunk == STEP_HUNK_LAST {
                 step.hunk = n_hunks.saturating_sub(1);
@@ -129,7 +130,7 @@ impl DiffPatch {
             let action = self.ask_action(&format!(
                 "({}/{}) Stage {} [y,n,q,a,d,e]? ",
                 step.hunk + 1,
-                n_hunks.max(1),
+                n_hunks_logical,
                 match change {
                     ChangeKind::Modified(_) => "this hunk",
                     ChangeKind::Removed(_) => "deletion",
@@ -140,8 +141,12 @@ impl DiffPatch {
             match action {
                 Action::HunkYes => *resolutions.get_mut(step.change).get_mut(step.hunk) = true,
                 Action::HunkNo => *resolutions.get_mut(step.change).get_mut(step.hunk) = false,
-                Action::FileYes => resolutions.get_mut(step.change).set_all(..n_hunks, true),
-                Action::FileNo => resolutions.get_mut(step.change).set_all(..n_hunks, false),
+                Action::FileYes => resolutions
+                    .get_mut(step.change)
+                    .set_all(..n_hunks_logical, true),
+                Action::FileNo => resolutions
+                    .get_mut(step.change)
+                    .set_all(..n_hunks_logical, false),
                 _ => {}
             }
 
@@ -195,7 +200,19 @@ impl DiffPatch {
             }
         }
 
-        dbg!(&resolutions);
+        for (((change, patch), (original, _)), file_resolution) in changes
+            .iter()
+            .zip(&mut patches)
+            .zip(&contents)
+            .zip(&resolutions)
+        {
+            for (hunk, &hunk_resolution) in patch.hunks_mut().iter_mut().zip(file_resolution) {
+                if hunk_resolution == false {
+                    *hunk = Hunk::default();
+                }
+            }
+            apply_change(changes, change, original, patch, file_resolution)?;
+        }
 
         Ok(())
     }
@@ -341,6 +358,43 @@ fn write_header(
     }
     if has_color {
         write!(w, "{}", style.suffix())?;
+    }
+
+    Ok(())
+}
+
+fn apply_change(
+    changes: &Changes,
+    change: &ChangeKind,
+    original: &str,
+    patch: &Patch<str>,
+    file_resolution: &VecMap<bool>,
+) -> Result<()> {
+    let applied = diffy::apply(original, patch)?;
+
+    let original_path = changes.original_path(change.inner());
+    let modified_path = changes.modified_path(change.inner());
+    match change {
+        ChangeKind::Modified(_) => {
+            std::fs::write(&modified_path, applied).context("error applying file modification")?
+        }
+        ChangeKind::Removed(_) => {
+            assert_eq!(file_resolution.len(), 1);
+            let resolution = *file_resolution.get(0);
+
+            if resolution == false {
+                std::fs::copy(&original_path, &modified_path)
+                    .context("error applying file removal")?;
+            }
+        }
+        ChangeKind::Added(_) => {
+            assert_eq!(file_resolution.len(), 1);
+
+            let resolution = *file_resolution.get(0);
+            if resolution == false {
+                std::fs::remove_file(modified_path).context("error applying file addition")?;
+            }
+        }
     }
 
     Ok(())
