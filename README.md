@@ -11,11 +11,28 @@ In other words, if you say `y` to everything the final state will be `right`, an
 
 ## Integration
 
+```sh
+cargo install --git https://github.com/jakobhellermann/diffpatch
+```
+
 ### Jujutsu
 
 ```toml
 [ui]
 diff-editor = "diffpatch"
 ```
+in `.config/jj/config.toml` will specify `diffpatch` as the default diff editor, which will be used for `jj commit`, `jj restore`, `jj split`, `jj squash` and `jj diffedit`.
 
-will specify `diffpatch` as the default diff editor, which will be used for `jj commit`, `jj restore`, `jj split`, `jj squash` and `jj diffedit`.
+
+## Configuration
+
+So far, `diffpatch` can only be configured through environment variables:
+
+- `DIFFPATCH_IMMEDIATE_COMMAND` (`=true`) When set, you can type `[y,n,q,a,d,e]` immediately without pressing enter.
+
+- `DIFFPATCH_INTERFACE`
+  - `direct` (default) Directly write changes to the terminal. Matches the behaviour of `git add -p`.
+  - `fullscreen` Go into fullscreen and display the changes there. Upon exit, the terminal will be restored to its previous state.
+  - `inline-clear` Don't go to fullscreen, but clear written lines after each hunk. (experimental)
+
+- `DIFFPATCH_CONTEXT_LEN`: (`=3`) The amount of context lines that are displayed around each change.
