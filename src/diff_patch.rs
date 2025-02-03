@@ -15,27 +15,8 @@ use termion::input::TermRead;
 use termion::raw::{IntoRawMode, RawTerminal};
 
 use crate::changes::{ChangeKind, Changes};
+use crate::config::Options;
 use crate::count_lines::CountLines;
-
-pub struct Options {
-    // diff options
-    context_len: usize,
-
-    // interface options
-    clear_after_hunk: bool,
-    immediate_command: bool,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            context_len: 3,
-
-            clear_after_hunk: false,
-            immediate_command: true,
-        }
-    }
-}
 
 pub struct DiffPatch {
     options: Options,
