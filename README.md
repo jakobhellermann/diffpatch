@@ -1,5 +1,7 @@
 # diffpatch
 
+[![asciicast demo](https://asciinema.org/a/701405.svg)](https://asciinema.org/a/701405)
+
 When running diffpatch on two folders
 ```sh
 diffpatch path/to/before path/to/after
