@@ -1,4 +1,5 @@
-use anyhow::{Result, ensure};
+use color_eyre::Result;
+use color_eyre::eyre::ensure;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;

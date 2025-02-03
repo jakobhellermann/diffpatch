@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0"
+color-eyre = { version = "0.6", default-features = false, features = ["track-caller"] }
 walkdir = "2.5"
 diffy = "0.4"
 nu-ansi-term = "0.50"

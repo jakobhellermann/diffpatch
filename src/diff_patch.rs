@@ -1,7 +1,8 @@
 use std::io::{BufRead, Write};
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use color_eyre::Result;
+use color_eyre::eyre::Context;
 use diffy::{Hunk, Patch, PatchFormatter};
 use nu_ansi_term::{Color, Style};
 use termion::cursor::DetectCursorPos;
