@@ -140,15 +140,22 @@ impl DiffPatch {
 
             self.step(change, patch, prev_step, step)?;
 
+            let kind = match (self.options.reversed, change) {
+                (_, ChangeKind::Modified(_)) => "this hunk",
+                (false, ChangeKind::Removed(_)) | (true, ChangeKind::Added(_)) => "deletion",
+                (false, ChangeKind::Added(_)) | (true, ChangeKind::Removed(_)) => "deletion",
+            };
+            let message = match self.options.jj_subcommand.as_deref().unwrap_or_default() {
+                "diffedit" => format!("Keep {kind}"),
+                "restore" => format!("Discard {kind}"),
+                "commit" | _ => format!("Stage {kind}"),
+            };
+
             let action = self.ask_action(&format!(
-                "({}/{}) Stage {} [y,n,q,a,d,e]? ",
+                "({}/{}) {} [y,n,q,a,d,e]? ",
                 step.hunk + 1,
                 n_hunks_logical,
-                match change {
-                    ChangeKind::Modified(_) => "this hunk",
-                    ChangeKind::Removed(_) => "deletion",
-                    ChangeKind::Added(_) => "addition",
-                },
+                message
             ))?;
 
             match action {

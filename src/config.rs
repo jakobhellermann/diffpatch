@@ -10,6 +10,9 @@ pub struct Options {
     // interface options
     pub clear_after_hunk: bool,
     pub immediate_command: bool,
+
+    // misc
+    pub jj_subcommand: Option<String>,
 }
 
 impl Default for Options {
@@ -20,22 +23,19 @@ impl Default for Options {
 
             clear_after_hunk: false,
             immediate_command: true,
+
+            jj_subcommand: None,
         }
     }
 }
 
 impl Options {
-    pub fn from_env() -> Result<Options> {
-        let mut options = Options::default();
+    pub fn load_env(&mut self) -> Result<&mut Options> {
+        get_env(&mut self.context_len, "DIFFPATCH_CONTEXT_LEN")?;
+        get_env_bool(&mut self.clear_after_hunk, "DIFFPATCH_CLEAR_AFTER_HUNK")?;
+        get_env_bool(&mut self.immediate_command, "DIFFPATCH_IMMEDIATE_COMMAND")?;
 
-        get_env(&mut options.context_len, "DIFFPATCH_CONTEXT_LEN")?;
-        get_env_bool(&mut options.clear_after_hunk, "DIFFPATCH_CLEAR_AFTER_HUNK")?;
-        get_env_bool(
-            &mut options.immediate_command,
-            "DIFFPATCH_IMMEDIATE_COMMAND",
-        )?;
-
-        Ok(options)
+        Ok(self)
     }
 }
 
