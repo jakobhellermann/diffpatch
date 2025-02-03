@@ -1,8 +1,9 @@
 use std::io::{BufRead, Write};
+use std::os::fd::AsFd;
 use std::path::Path;
 
 use color_eyre::Result;
-use color_eyre::eyre::Context;
+use color_eyre::eyre::{Context, eyre};
 use diffy::{Hunk, Patch, PatchFormatter};
 use nu_ansi_term::{Color, Style};
 use termion::cursor::DetectCursorPos;
@@ -39,7 +40,7 @@ pub struct DiffPatch {
     formatter: PatchFormatter,
 
     stdin: std::io::Stdin,
-    stdout: RawTerminal<std::io::Stdout>,
+    stdout: MaybeRawTerminal<std::io::Stdout>,
 
     uncleared_lines: (u16, u16),
 }
@@ -61,10 +62,27 @@ impl Step {
 }
 
 impl DiffPatch {
-    pub fn new(options: Options) -> Result<Self> {
+    pub fn new(mut options: Options) -> Result<Self> {
         let stdin = std::io::stdin();
-        let stdout = std::io::stdout().into_raw_mode()?;
-        stdout.suspend_raw_mode()?;
+        let stdout = std::io::stdout();
+        let is_tty = termion::is_tty(&stdout);
+
+        if !is_tty {
+            options.immediate_command = false;
+            options.clear_after_hunk = false;
+        }
+
+        let wants_raw_terminal = options.immediate_command || options.clear_after_hunk;
+        let stdout = if wants_raw_terminal {
+            let term = stdout
+                .into_raw_mode()
+                .context("Could not set terminal into raw mode")?;
+            term.suspend_raw_mode()?;
+            MaybeRawTerminal::Raw(term)
+        } else {
+            MaybeRawTerminal::Normal(stdout)
+        };
+
         Ok(DiffPatch {
             options,
             formatter: PatchFormatter::new().with_color(),
@@ -239,7 +257,8 @@ impl DiffPatch {
         prev_step: Step,
         step: Step,
     ) -> Result<()> {
-        let size = termion::terminal_size()?;
+        let size = self.term_size()?;
+
         let hunk = patch.hunks().get(step.hunk);
 
         let mut writer = CountLines::new(self.stdout.lock(), size.0);
@@ -259,6 +278,13 @@ impl DiffPatch {
         }
 
         Ok(())
+    }
+
+    fn term_size(&self) -> Result<(u16, u16), std::io::Error> {
+        self.stdout
+            .is_raw()
+            .then(termion::terminal_size)
+            .unwrap_or(Ok((u16::MAX, u16::MAX)))
     }
 
     fn clear_all(&mut self) -> Result<()> {
@@ -298,11 +324,13 @@ impl DiffPatch {
     }
 
     fn cursor_pos(&mut self) -> Result<(u16, u16)> {
-        self.stdout.activate_raw_mode()?;
-        let new_pos = self.stdout.cursor_pos()?;
-        self.stdout.suspend_raw_mode()?;
+        let term = self.stdout.get_raw()?;
 
-        Ok(new_pos)
+        term.activate_raw_mode()?;
+        let pos = term.cursor_pos()?;
+        term.suspend_raw_mode()?;
+
+        Ok(pos)
     }
 }
 
@@ -363,7 +391,7 @@ impl DiffPatch {
 
         let result = if self.options.immediate_command {
             ask()?;
-            self.stdout.activate_raw_mode()?;
+            self.stdout.get_raw()?.activate_raw_mode()?;
 
             let mut result = Action::None;
             for key in self.stdin.lock().keys() {
@@ -405,7 +433,7 @@ impl DiffPatch {
 }
 
 fn write_header(
-    mut w: impl std::io::Write,
+    mut w: impl Write,
     filename_original: Option<&Path>,
     filename_modified: Option<&Path>,
 ) -> std::io::Result<()> {
@@ -463,4 +491,50 @@ fn apply_change(
     }
 
     Ok(())
+}
+
+enum MaybeRawTerminal<W: Write + AsFd> {
+    Raw(RawTerminal<W>),
+    Normal(W),
+}
+impl<W: Write + AsFd> MaybeRawTerminal<W> {
+    fn inner_mut(&mut self) -> &mut W {
+        match self {
+            MaybeRawTerminal::Raw(term) => &mut *term,
+            MaybeRawTerminal::Normal(w) => w,
+        }
+    }
+
+    #[track_caller]
+    fn get_raw(&mut self) -> Result<&mut RawTerminal<W>> {
+        match self {
+            MaybeRawTerminal::Raw(term) => Ok(term),
+            MaybeRawTerminal::Normal(_) => {
+                Err(eyre!("Attempted to get raw terminal, but it isn't enabled"))
+            }
+        }
+    }
+    fn is_raw(&self) -> bool {
+        matches!(self, MaybeRawTerminal::Raw(_))
+    }
+    fn suspend_raw_mode(&mut self) -> Result<(), std::io::Error> {
+        match self {
+            MaybeRawTerminal::Raw(term) => term.suspend_raw_mode(),
+            MaybeRawTerminal::Normal(_) => Ok(()),
+        }
+    }
+}
+impl<W: Write + AsFd> Write for MaybeRawTerminal<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.inner_mut().write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner_mut().flush()
+    }
+}
+impl MaybeRawTerminal<std::io::Stdout> {
+    fn lock(&mut self) -> std::io::StdoutLock<'static> {
+        self.inner_mut().lock()
+    }
 }
