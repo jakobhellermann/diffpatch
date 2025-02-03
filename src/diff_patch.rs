@@ -321,27 +321,58 @@ enum Action {
     None,
 }
 
+impl Action {
+    fn from_char(c: char) -> Option<Action> {
+        Some(match c {
+            'y' => Action::HunkYes,
+            'n' => Action::HunkNo,
+            'a' => Action::FileYes,
+            'd' => Action::FileNo,
+            'e' => Action::Edit,
+            'q' => Action::Quit,
+            'l' => Action::Clear,
+            _ => return None,
+        })
+    }
+
+    fn from_str(s: &str) -> Option<Action> {
+        match s {
+            "\x1b[D" | "\x1b[A" => Some(Action::Prev),
+            "\x1b[C" | "\x1b[B" => Some(Action::Next),
+            other => {
+                let mut chars = other.chars();
+                let c = chars.next()?;
+                if chars.next().is_some() {
+                    return None;
+                }
+                Action::from_char(c)
+            }
+        }
+    }
+}
+
 impl DiffPatch {
-    fn ask_action(&mut self, msg: &str) -> Result<Action, std::io::Error> {
+    fn ask_action(&mut self, msg: &str) -> Result<Action> {
         let style = nu_ansi_term::Style::new().fg(Color::Blue).bold();
 
         let mut stdout = std::io::stdout().lock();
-        write!(self.stdout, "{}", style.paint(msg))?;
-        stdout.flush()?;
+        let mut ask = || {
+            write!(self.stdout, "{}", style.paint(msg))?;
+            stdout.flush()
+        };
 
         let result = if self.options.immediate_command {
+            ask()?;
             self.stdout.activate_raw_mode()?;
 
             let mut result = Action::None;
             for key in self.stdin.lock().keys() {
                 result = match key? {
+                    Key::Char(c) => match Action::from_char(c) {
+                        Some(action) => action,
+                        None => continue,
+                    },
                     Key::Ctrl('c') => Action::Exit,
-                    Key::Char('y') => Action::HunkYes,
-                    Key::Char('n') => Action::HunkNo,
-                    Key::Char('a') => Action::FileYes,
-                    Key::Char('d') => Action::FileNo,
-                    Key::Char('e') => Action::Edit,
-                    Key::Char('q') => Action::Quit,
                     Key::Ctrl('l') => Action::Clear,
                     Key::Left | Key::Up => Action::Prev,
                     Key::Right | Key::Down => Action::Next,
@@ -356,8 +387,17 @@ impl DiffPatch {
             result
         } else {
             let mut line = String::new();
-            BufRead::read_line(&mut self.stdin.lock(), &mut line)?;
-            todo!()
+
+            loop {
+                ask()?;
+                line.clear();
+                BufRead::read_line(&mut self.stdin.lock(), &mut line)?;
+
+                match Action::from_str(line.trim_end_matches('\n')) {
+                    Some(action) => break action,
+                    None => continue,
+                }
+            }
         };
 
         Ok(result)
