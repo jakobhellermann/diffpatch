@@ -1,4 +1,5 @@
 use std::io::{BufRead, Write};
+use std::ops::ControlFlow;
 use std::os::fd::AsFd;
 use std::path::Path;
 
@@ -323,6 +324,53 @@ impl DiffPatch {
         Ok(pos)
     }
 
+    fn ask_action(&mut self, msg: &str) -> Result<Action> {
+        let style = nu_ansi_term::Style::new().fg(Color::Blue).bold();
+
+        let mut stdout = std::io::stdout().lock();
+        let mut ask = || {
+            write!(self.stdout, "{}", style.paint(msg))?;
+            stdout.flush()
+        };
+
+        let result = if self.options.immediate_command {
+            ask()?;
+
+            let result = self.keys(|key| {
+                let action = match key {
+                    Key::Char(c) => match Action::from_char(c) {
+                        Some(action) => action,
+                        None => return Ok(ControlFlow::Continue(())),
+                    },
+                    Key::Ctrl('c') => Action::Exit,
+                    Key::Ctrl('l') => Action::Clear,
+                    Key::Left | Key::Up => Action::Prev,
+                    Key::Right | Key::Down => Action::Next,
+                    _ => return Ok(ControlFlow::Continue(())),
+                };
+                Ok(ControlFlow::Break(action))
+            })?;
+            writeln!(self.stdout)?;
+
+            result.unwrap_or(Action::None)
+        } else {
+            let mut line = String::new();
+
+            loop {
+                ask()?;
+                line.clear();
+                BufRead::read_line(&mut self.stdin.lock(), &mut line)?;
+
+                match Action::from_str(line.trim_end_matches('\n')) {
+                    Some(action) => break action,
+                    None => continue,
+                }
+            }
+        };
+
+        Ok(result)
+    }
+
     fn cursor_pos(&mut self) -> Result<(u16, u16)> {
         let term = self.stdout.get_raw()?;
 
@@ -331,6 +379,23 @@ impl DiffPatch {
         term.suspend_raw_mode()?;
 
         Ok(pos)
+    }
+
+    fn keys<B>(&mut self, mut f: impl FnMut(Key) -> Result<ControlFlow<B>>) -> Result<Option<B>> {
+        self.stdout.get_raw()?.activate_raw_mode()?;
+
+        for key in self.stdin.lock().keys() {
+            match f(key?)? {
+                ControlFlow::Continue(_) => continue,
+                ControlFlow::Break(b) => {
+                    self.stdout.suspend_raw_mode()?;
+                    return Ok(Some(b));
+                }
+            }
+        }
+
+        self.stdout.suspend_raw_mode()?;
+        Ok(None)
     }
 }
 
@@ -376,59 +441,6 @@ impl Action {
                 Action::from_char(c)
             }
         }
-    }
-}
-
-impl DiffPatch {
-    fn ask_action(&mut self, msg: &str) -> Result<Action> {
-        let style = nu_ansi_term::Style::new().fg(Color::Blue).bold();
-
-        let mut stdout = std::io::stdout().lock();
-        let mut ask = || {
-            write!(self.stdout, "{}", style.paint(msg))?;
-            stdout.flush()
-        };
-
-        let result = if self.options.immediate_command {
-            ask()?;
-            self.stdout.get_raw()?.activate_raw_mode()?;
-
-            let mut result = Action::None;
-            for key in self.stdin.lock().keys() {
-                result = match key? {
-                    Key::Char(c) => match Action::from_char(c) {
-                        Some(action) => action,
-                        None => continue,
-                    },
-                    Key::Ctrl('c') => Action::Exit,
-                    Key::Ctrl('l') => Action::Clear,
-                    Key::Left | Key::Up => Action::Prev,
-                    Key::Right | Key::Down => Action::Next,
-                    _ => continue,
-                };
-                break;
-            }
-
-            self.stdout.suspend_raw_mode()?;
-            writeln!(self.stdout)?;
-
-            result
-        } else {
-            let mut line = String::new();
-
-            loop {
-                ask()?;
-                line.clear();
-                BufRead::read_line(&mut self.stdin.lock(), &mut line)?;
-
-                match Action::from_str(line.trim_end_matches('\n')) {
-                    Some(action) => break action,
-                    None => continue,
-                }
-            }
-        };
-
-        Ok(result)
     }
 }
 
