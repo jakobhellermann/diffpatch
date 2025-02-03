@@ -16,7 +16,6 @@ use termion::raw::{IntoRawMode, RawTerminal};
 
 use crate::changes::{ChangeKind, Changes};
 use crate::count_lines::CountLines;
-use crate::vec_map::VecMap;
 
 pub struct Options {
     // diff options
@@ -102,7 +101,7 @@ impl DiffPatch {
             return Ok(());
         }
 
-        let mut resolutions = VecMap::<VecMap<bool>>::with_capacity(changes.changes.len());
+        let mut resolutions = vec![Vec::<bool>::new(); changes.changes.len()];
 
         let contents: Vec<(String, String)> = changes
             .iter()
@@ -151,6 +150,8 @@ impl DiffPatch {
             let n_hunks = patch.hunks().len();
             let n_hunks_logical = n_hunks.max(1);
 
+            resolutions[step.change].resize(n_hunks_logical, false);
+
             if step.hunk == STEP_HUNK_LAST {
                 step.hunk = n_hunks.saturating_sub(1);
             }
@@ -169,14 +170,14 @@ impl DiffPatch {
             ))?;
 
             match action {
-                Action::HunkYes => *resolutions.get_mut(step.change).get_mut(step.hunk) = true,
-                Action::HunkNo => *resolutions.get_mut(step.change).get_mut(step.hunk) = false,
-                Action::FileYes => resolutions
-                    .get_mut(step.change)
-                    .set_all(..n_hunks_logical, true),
-                Action::FileNo => resolutions
-                    .get_mut(step.change)
-                    .set_all(..n_hunks_logical, false),
+                Action::HunkYes => resolutions[step.change][step.hunk] = true,
+                Action::HunkNo => resolutions[step.change][step.hunk] = false,
+                Action::FileYes => resolutions[step.change][..n_hunks_logical]
+                    .iter_mut()
+                    .for_each(|x| *x = true),
+                Action::FileNo => resolutions[step.change][..n_hunks_logical]
+                    .iter_mut()
+                    .for_each(|x| *x = false),
                 _ => {}
             }
 
@@ -224,10 +225,10 @@ impl DiffPatch {
                     if split_range.len() == 1 {
                         self.write_error("Sorry, cannot split this hunk")?;
                     } else {
-                        let file_resolutions = resolutions.get_mut(step.change);
+                        let file_resolutions = &mut resolutions[step.change];
 
-                        let resolution = *file_resolutions.get_mut(split_range.start);
-                        file_resolutions.inner_mut().splice(
+                        let resolution = file_resolutions[split_range.start];
+                        file_resolutions.splice(
                             split_range.start..split_range.start + 1,
                             iter::repeat_n(resolution, split_range.len()),
                         );
@@ -262,9 +263,10 @@ impl DiffPatch {
             .iter()
             .zip(&mut patches)
             .zip(&contents)
-            .zip(&resolutions)
+            .zip(&mut resolutions)
         {
-            for (hunk, &hunk_resolution) in patch.hunks_mut().iter_mut().zip(file_resolution) {
+            file_resolution.resize(patch.hunks().len().max(1), false);
+            for (hunk, &hunk_resolution) in patch.hunks_mut().iter_mut().zip(&*file_resolution) {
                 if hunk_resolution == false {
                     *hunk = Hunk::default();
                 }
@@ -547,7 +549,7 @@ fn apply_change(
     change: &ChangeKind,
     original: &str,
     patch: &Patch<str>,
-    file_resolution: &VecMap<bool>,
+    file_resolution: &[bool],
 ) -> Result<()> {
     let applied = diffy::apply(original, patch)?;
 
@@ -559,7 +561,7 @@ fn apply_change(
         }
         ChangeKind::Removed(_) => {
             assert_eq!(file_resolution.len(), 1);
-            let resolution = *file_resolution.get_existing(0);
+            let resolution = file_resolution[0];
 
             if resolution == false {
                 std::fs::copy(&original_path, &modified_path)
@@ -569,7 +571,7 @@ fn apply_change(
         ChangeKind::Added(_) => {
             assert_eq!(file_resolution.len(), 1);
 
-            let resolution = *file_resolution.get_existing(0);
+            let resolution = file_resolution[0];
             if resolution == false {
                 std::fs::remove_file(modified_path).context("error applying file addition")?;
             }
