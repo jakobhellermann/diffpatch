@@ -5,6 +5,7 @@ use std::path::PathBuf;
 mod changes;
 mod count_lines;
 mod diff_patch;
+mod vec_map;
 
 use diff_patch::{DiffPatch, Options};
 

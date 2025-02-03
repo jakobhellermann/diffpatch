@@ -21,6 +21,10 @@ impl Changes {
         read_changes(original_dir, modified_dir)
     }
 
+    pub fn iter(&self) -> std::slice::Iter<'_, ChangeKind> {
+        self.changes.iter()
+    }
+
     pub fn original_path(&self, path: &Path) -> PathBuf {
         self.base_dir_original.join(path)
     }

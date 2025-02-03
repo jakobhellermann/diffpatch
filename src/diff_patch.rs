@@ -11,6 +11,7 @@ use termion::raw::{IntoRawMode, RawTerminal};
 
 use crate::changes::{ChangeKind, Changes};
 use crate::count_lines::CountLines;
+use crate::vec_map::VecMap;
 
 pub struct Options {
     // diff options
@@ -77,29 +78,46 @@ impl DiffPatch {
             return Ok(());
         }
 
+        let mut resolutions = VecMap::<VecMap<bool>>::with_capacity(changes.changes.len());
+
+        let contents: Vec<(String, String)> = changes
+            .iter()
+            .map(|change| {
+                let (original, modified) = change.actual(changes);
+
+                let original_content = original
+                    .map(std::fs::read_to_string)
+                    .transpose()?
+                    .unwrap_or_default();
+                let modified_content = modified
+                    .map(std::fs::read_to_string)
+                    .transpose()?
+                    .unwrap_or_default();
+
+                Ok((original_content, modified_content))
+            })
+            .collect::<Result<_>>()?;
+
+        let patches: Vec<Patch<str>> = changes
+            .iter()
+            .zip(&contents)
+            .map(|(change, (original, modified))| {
+                let mut diff_options = diffy::DiffOptions::new();
+                let path = change.inner();
+                diff_options.set_context_len(self.options.context_len);
+                diff_options.set_original_filename(path.display().to_string());
+                diff_options.set_modified_filename(path.display().to_string());
+                diff_options.create_patch(original, modified)
+            })
+            .collect();
+
         let mut step = Step::default();
         let mut prev_step = Step::invalid();
 
         loop {
             let change = &changes.changes[step.change];
 
-            let (original, modified) = change.actual(changes);
-
-            let original_content = original
-                .map(std::fs::read_to_string)
-                .transpose()?
-                .unwrap_or_default();
-            let modified_content = modified
-                .map(std::fs::read_to_string)
-                .transpose()?
-                .unwrap_or_default();
-
-            let path = change.inner();
-            let mut diff_options = diffy::DiffOptions::new();
-            diff_options.set_context_len(self.options.context_len);
-            diff_options.set_original_filename(path.display().to_string());
-            diff_options.set_modified_filename(path.display().to_string());
-            let patch = diff_options.create_patch(&original_content, &modified_content);
+            let patch = &patches[step.change];
             let n_hunks = patch.hunks().len();
 
             if step.hunk == STEP_HUNK_LAST {
@@ -119,14 +137,21 @@ impl DiffPatch {
                 },
             ))?;
 
+            match action {
+                Action::HunkYes => *resolutions.get_mut(step.change).get_mut(step.hunk) = true,
+                Action::HunkNo => *resolutions.get_mut(step.change).get_mut(step.hunk) = false,
+                Action::FileYes => resolutions.get_mut(step.change).set_all(..n_hunks, true),
+                Action::FileNo => resolutions.get_mut(step.change).set_all(..n_hunks, false),
+                _ => {}
+            }
+
             let mut exit = false;
 
             prev_step = step;
             match action {
-                Action::Stage | Action::DontStage => {
-                    step.hunk += 1;
-                }
-                Action::AllFile | Action::NoneFile => {
+                Action::HunkYes => step.hunk += 1,
+                Action::HunkNo => step.hunk += 1,
+                Action::FileYes | Action::FileNo => {
                     step.change += 1;
                     step.hunk = 0;
                 }
@@ -169,6 +194,8 @@ impl DiffPatch {
                 break;
             }
         }
+
+        dbg!(&resolutions);
 
         Ok(())
     }
@@ -242,16 +269,14 @@ impl DiffPatch {
 }
 
 enum Action {
-    Stage,
-    DontStage,
-    Quit,
-    AllFile,
-    NoneFile,
+    HunkYes,
+    HunkNo,
+    FileYes,
+    FileNo,
     Edit,
-
+    Quit,
     Prev,
     Next,
-
     None,
 }
 
@@ -270,12 +295,12 @@ impl DiffPatch {
             for key in self.stdin.lock().keys() {
                 result = match key? {
                     Key::Ctrl('c') => std::process::exit(1),
-                    Key::Char('y') => Action::Stage,
-                    Key::Char('n') => Action::DontStage,
-                    Key::Char('q') => Action::Quit,
-                    Key::Char('a') => Action::AllFile,
-                    Key::Char('d') => Action::NoneFile,
+                    Key::Char('y') => Action::HunkYes,
+                    Key::Char('n') => Action::HunkNo,
+                    Key::Char('a') => Action::FileYes,
+                    Key::Char('d') => Action::FileNo,
                     Key::Char('e') => Action::Edit,
+                    Key::Char('q') => Action::Quit,
                     Key::Left | Key::Up => Action::Prev,
                     Key::Right | Key::Down => Action::Next,
                     _ => continue,
