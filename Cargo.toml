@@ -12,7 +12,7 @@ termion = "4.0"
 libc = "0.2"
 
 [patch.crates-io]
-diffy = { path = "/home/jakob/dev/rust/contrib/diffy" }
+diffy = { git = "https://github.com/jakobhellermann/diffy", branch = "dev" }
 
 [lints.clippy]
 bool_comparison = "allow"
