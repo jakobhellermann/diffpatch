@@ -201,18 +201,17 @@ impl DiffPatch {
                     step = Step::invalid();
                     finish = true;
                 }
-                Action::Edit => match patch.hunks_mut().get_mut(step.hunk) {
-                    Some(hunk) => {
-                        let display_hunk = reverse_if(hunk, self.options.reversed);
-                        let hunk_str = self.plain_formatter.fmt_hunk(&display_hunk).to_string();
-                        let new_hunk = self.edit(&hunk_str)?;
-                        let new_hunk = Hunk::from_str(new_hunk.leak(), true)?;
-                        *hunk = reverse_if(&new_hunk, self.options.reversed).into_owned();
-                        resolutions[step.change][step.hunk] = true;
-                        step.hunk += 1;
+                Action::Edit => {
+                    if step.hunk < patch.hunks().len() {
+                        let original = contents[step.change].0.as_str();
+                        if self.edit_hunk(change, patch, step.hunk, original)? {
+                            resolutions[step.change][step.hunk] = true;
+                            step.hunk += 1;
+                        }
+                    } else {
+                        self.write_error("Sorry, cannot edit this hunk")?;
                     }
-                    None => self.write_error("Sorry, cannot edit this hunk")?,
-                },
+                }
                 Action::Next => {
                     let last = step.change == changes.changes.len() - 1
                         && step.hunk == n_hunks.saturating_sub(1);
@@ -447,6 +446,106 @@ impl DiffPatch {
 
         self.stdout.suspend_raw_mode()?;
         Ok(None)
+    }
+
+    /// Open the external editor on a single hunk and validate that the result
+    /// still applies to the original before accepting it. If the edit fails to
+    /// parse or to apply, the user is shown the reason and asked whether to edit again.
+    ///
+    /// Returns `true` if the hunk was edited and accepted, `false` if the edit
+    /// was discarded or aborted (all lines removed) and the hunk left unchanged.
+    fn edit_hunk(
+        &mut self,
+        change: &ChangeKind,
+        patch: &mut Patch<str>,
+        idx: usize,
+        original: &str,
+    ) -> Result<bool> {
+        let path = change.inner();
+        let mut content = {
+            let display_hunk = reverse_if(&patch.hunks()[idx], self.options.reversed);
+            self.plain_formatter.fmt_hunk(&display_hunk).to_string()
+        };
+
+        loop {
+            let edited = self.edit(&content)?;
+
+            // Mirrors git's behaviour: removing every line aborts the edit.
+            if edited.trim().is_empty() {
+                return Ok(false);
+            }
+
+            let new_hunk = match Hunk::from_str(edited.clone().leak(), true) {
+                Ok(hunk) => reverse_if(&hunk, self.options.reversed).into_owned(),
+                Err(err) => {
+                    self.write_error(&format!("error: could not parse edited hunk: {err}"))?;
+                    if self.ask_edit_again()? {
+                        content = edited;
+                        continue;
+                    }
+                    return Ok(false);
+                }
+            };
+
+            let start_line = new_hunk.old_range().start();
+            let previous = std::mem::replace(&mut patch.hunks_mut()[idx], new_hunk);
+            match diffy::apply(original, patch) {
+                Ok(_) => return Ok(true),
+                Err(_) => {
+                    patch.hunks_mut()[idx] = previous;
+                    self.write_error(&format!(
+                        "error: {}:{}: patch does not apply",
+                        path.display(),
+                        start_line
+                    ))?;
+                    if self.ask_edit_again()? {
+                        content = edited;
+                        continue;
+                    }
+                    return Ok(false);
+                }
+            }
+        }
+    }
+
+    fn ask_edit_again(&mut self) -> Result<bool> {
+        self.ask_yes_no(
+            "Your edited hunk does not apply. Edit again (saying \"no\" discards!) [y/n]? ",
+        )
+    }
+
+    fn ask_yes_no(&mut self, msg: &str) -> Result<bool> {
+        let style = nu_ansi_term::Style::new().fg(Color::Blue).bold();
+
+        let mut stdout = std::io::stdout().lock();
+        let mut ask = || {
+            write!(self.stdout, "{}", style.paint(msg))?;
+            stdout.flush()
+        };
+
+        if self.options.immediate_command {
+            ask()?;
+            let result = self.keys(|key| {
+                Ok(match key {
+                    Key::Char('y') | Key::Char('Y') => ControlFlow::Break(true),
+                    Key::Char('n') | Key::Char('N') | Key::Ctrl('c') => ControlFlow::Break(false),
+                    _ => ControlFlow::Continue(()),
+                })
+            })?;
+            writeln!(self.stdout)?;
+            Ok(result.unwrap_or(false))
+        } else {
+            loop {
+                ask()?;
+                let mut line = String::new();
+                BufRead::read_line(&mut self.stdin.lock(), &mut line)?;
+                match line.trim() {
+                    "y" | "Y" => return Ok(true),
+                    "n" | "N" => return Ok(false),
+                    _ => continue,
+                }
+            }
+        }
     }
 
     fn edit(&self, hunk: &str) -> Result<String> {
