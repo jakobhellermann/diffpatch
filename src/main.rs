@@ -30,6 +30,7 @@ fn main() -> Result<ExitCode> {
 }
 
 // TODO: get this from JJ itself
+#[cfg(unix)]
 fn get_jj_subcommand() -> Result<Option<String>> {
     // SAFETY: no preconditions
     let parent = unsafe { libc::getppid() };
@@ -52,4 +53,9 @@ fn get_jj_subcommand() -> Result<Option<String>> {
             .unwrap_or(cmd)
             .to_string()
     }))
+}
+
+#[cfg(not(unix))]
+fn get_jj_subcommand() -> Result<Option<String>> {
+    Ok(None)
 }

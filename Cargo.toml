@@ -8,7 +8,9 @@ color-eyre = { version = "0.6", default-features = false, features = ["track-cal
 walkdir = "2.5"
 diffy = "0.4"
 nu-ansi-term = "0.50"
-termion = "4.0"
+crossterm = "0.29.0"
+
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [patch.crates-io]

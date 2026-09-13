@@ -1,20 +1,18 @@
 use std::borrow::Cow;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, IsTerminal, Write};
 use std::iter;
 use std::ops::ControlFlow;
-use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use color_eyre::Result;
 use color_eyre::eyre::{Context, ensure, eyre};
+use crossterm::cursor::{self, MoveTo};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::execute;
+use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use diffy::{Hunk, Patch, PatchFormatter};
 use nu_ansi_term::{Color, Style};
-use termion::cursor::DetectCursorPos;
-use termion::event::Key;
-use termion::input::TermRead;
-use termion::raw::{IntoRawMode, RawTerminal};
-use termion::screen::{AlternateScreen, IntoAlternateScreen};
 
 use crate::changes::{ChangeKind, Changes};
 use crate::config::{Interface, Options};
@@ -28,7 +26,7 @@ pub struct DiffPatch {
     stdin: std::io::Stdin,
     stdout: MaybeRawTerminal<std::io::Stdout>,
 
-    _alternate: Option<AlternateScreen<std::io::Stdout>>,
+    _alternate: Option<AlternateScreen>,
 
     inline_uncleared_lines: (u16, u16),
 }
@@ -53,7 +51,7 @@ impl DiffPatch {
     pub fn new(mut options: Options) -> Result<Self> {
         let stdin = std::io::stdin();
         let stdout = std::io::stdout();
-        let is_tty = termion::is_tty(&stdout);
+        let is_tty = stdout.is_terminal();
 
         if !is_tty {
             options.immediate_command = false;
@@ -66,8 +64,8 @@ impl DiffPatch {
                 Interface::InlineClear | Interface::Fullscreen
             );
         let stdout = if wants_raw_terminal {
-            let term = stdout
-                .into_raw_mode()
+            let mut term = RawTerminal::new(stdout);
+            term.activate_raw_mode()
                 .context("Could not set terminal into raw mode")?;
             term.suspend_raw_mode()?;
             MaybeRawTerminal::Raw(term)
@@ -77,9 +75,8 @@ impl DiffPatch {
 
         let alternate = matches!(options.interface, Interface::Fullscreen)
             .then(|| -> std::io::Result<_> {
-                let mut alt = std::io::stdout().into_alternate_screen()?;
-                write!(alt, "{}", termion::cursor::Goto(1, 1))?;
-                Ok(alt)
+                execute!(std::io::stdout(), EnterAlternateScreen, MoveTo(0, 0))?;
+                Ok(AlternateScreen)
             })
             .transpose()
             .context("Could not open fullscreen terminal")?;
@@ -315,7 +312,7 @@ impl DiffPatch {
     fn term_size(&self) -> Result<(u16, u16), std::io::Error> {
         self.stdout
             .is_raw()
-            .then(termion::terminal_size)
+            .then(terminal::size)
             .unwrap_or(Ok((u16::MAX, u16::MAX)))
     }
 
@@ -331,8 +328,8 @@ impl DiffPatch {
                     write!(
                         self.stdout,
                         "{}{}",
-                        termion::cursor::Goto(1, header_lines + 1),
-                        termion::clear::AfterCursor,
+                        MoveTo(0, header_lines),
+                        Clear(ClearType::FromCursorDown),
                     )?;
                 }
             }
@@ -349,8 +346,8 @@ impl DiffPatch {
     }
 
     fn clear_all(&mut self) -> Result<()> {
-        write!(self.stdout, "{}", termion::clear::All)?;
-        write!(self.stdout, "{}", termion::cursor::Goto(1, 1))?;
+        write!(self.stdout, "{}", Clear(ClearType::All))?;
+        write!(self.stdout, "{}", MoveTo(0, 0))?;
         Ok(())
     }
 
@@ -361,8 +358,8 @@ impl DiffPatch {
         write!(
             self.stdout,
             "{}{}",
-            termion::cursor::Goto(1, new_pos.1),
-            termion::clear::AfterCursor,
+            MoveTo(0, new_pos.1),
+            Clear(ClearType::FromCursorDown),
         )?;
         self.stdout.flush()?;
 
@@ -425,7 +422,7 @@ impl DiffPatch {
         let term = self.stdout.get_raw()?;
 
         term.activate_raw_mode()?;
-        let pos = term.cursor_pos()?;
+        let pos = cursor::position()?;
         term.suspend_raw_mode()?;
 
         Ok(pos)
@@ -434,18 +431,19 @@ impl DiffPatch {
     fn keys<B>(&mut self, mut f: impl FnMut(Key) -> Result<ControlFlow<B>>) -> Result<Option<B>> {
         self.stdout.get_raw()?.activate_raw_mode()?;
 
-        for key in self.stdin.lock().keys() {
-            match f(key?)? {
-                ControlFlow::Continue(_) => continue,
-                ControlFlow::Break(b) => {
-                    self.stdout.suspend_raw_mode()?;
-                    return Ok(Some(b));
-                }
+        let result = loop {
+            let ev = event::read()?;
+            let Some(key) = Key::from_event(ev) else {
+                continue;
+            };
+            match f(key)? {
+                ControlFlow::Continue(()) => continue,
+                ControlFlow::Break(b) => break Some(b),
             }
-        }
+        };
 
         self.stdout.suspend_raw_mode()?;
-        Ok(None)
+        Ok(result)
     }
 
     /// Open the external editor on a single hunk and validate that the result
@@ -708,14 +706,99 @@ fn reverse_if<'h, 'c>(hunk: &'c Hunk<'h, str>, reverse: bool) -> Cow<'c, Hunk<'h
     }
 }
 
-enum MaybeRawTerminal<W: Write + AsFd> {
+/// Guards crossterm's global raw mode: restores cooked mode on drop, like termion's `RawTerminal`.
+struct RawTerminal<W> {
+    inner: W,
+    raw_active: bool,
+}
+impl<W> RawTerminal<W> {
+    fn new(inner: W) -> Self {
+        RawTerminal {
+            inner,
+            raw_active: false,
+        }
+    }
+
+    fn inner_mut(&mut self) -> &mut W {
+        &mut self.inner
+    }
+
+    fn activate_raw_mode(&mut self) -> std::io::Result<()> {
+        if !self.raw_active {
+            terminal::enable_raw_mode()?;
+            self.raw_active = true;
+        }
+        Ok(())
+    }
+    fn suspend_raw_mode(&mut self) -> std::io::Result<()> {
+        if self.raw_active {
+            terminal::disable_raw_mode()?;
+            self.raw_active = false;
+        }
+        Ok(())
+    }
+}
+impl<W> Drop for RawTerminal<W> {
+    fn drop(&mut self) {
+        let _ = self.suspend_raw_mode();
+    }
+}
+
+/// Leaves the alternate screen on drop, like termion's `AlternateScreen` guard.
+struct AlternateScreen;
+impl Drop for AlternateScreen {
+    fn drop(&mut self) {
+        let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+    }
+}
+
+/// The subset of keys this module handles, mapped from crossterm events.
+enum Key {
+    Char(char),
+    Ctrl(char),
+    Left,
+    Right,
+    Up,
+    Down,
+}
+impl Key {
+    fn from_event(ev: Event) -> Option<Self> {
+        let Event::Key(key) = ev else {
+            return None;
+        };
+        if key.kind == KeyEventKind::Release {
+            return None;
+        }
+        match key.code {
+            KeyCode::Char(c) => {
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    Some(Key::Ctrl(c.to_ascii_lowercase()))
+                } else if key
+                    .modifiers
+                    .intersects(KeyModifiers::ALT | KeyModifiers::META | KeyModifiers::SUPER)
+                {
+                    None
+                } else {
+                    Some(Key::Char(c))
+                }
+            }
+            KeyCode::Left => Some(Key::Left),
+            KeyCode::Right => Some(Key::Right),
+            KeyCode::Up => Some(Key::Up),
+            KeyCode::Down => Some(Key::Down),
+            _ => None,
+        }
+    }
+}
+
+enum MaybeRawTerminal<W: Write> {
     Raw(RawTerminal<W>),
     Normal(W),
 }
-impl<W: Write + AsFd> MaybeRawTerminal<W> {
+impl<W: Write> MaybeRawTerminal<W> {
     fn inner_mut(&mut self) -> &mut W {
         match self {
-            MaybeRawTerminal::Raw(term) => &mut *term,
+            MaybeRawTerminal::Raw(term) => term.inner_mut(),
             MaybeRawTerminal::Normal(w) => w,
         }
     }
@@ -739,7 +822,7 @@ impl<W: Write + AsFd> MaybeRawTerminal<W> {
         }
     }
 }
-impl<W: Write + AsFd> Write for MaybeRawTerminal<W> {
+impl<W: Write> Write for MaybeRawTerminal<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.inner_mut().write(buf)
     }
